@@ -18,7 +18,6 @@ Hamborger=(deadEye + Chicken_Sandwich)
 print(Hamborger)
 #6. Take the result from #5 and divide it by 2. Print the result.
 print(Hamborger/2)
-#7. Change the value of the boolean variable to the opposite value (if true then make false, or vice versa).
 explosion=False
 #8. Print the value of the boolean variable.
 print(explosion)
