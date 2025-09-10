@@ -1,587 +1,683 @@
-code = r'''import math
+code = r"""
+import math
 import random
 import sys
-import pygame
+from dataclasses import dataclass
+from typing import List, Tuple, Optional
 
-# ---------------
+import pygame
+Vec2 = pygame.math.Vector2
+
+# ==============================
 # CONFIG
-# ---------------
-WIDTH, HEIGHT = 960, 540
+# ==============================
+WIDTH, HEIGHT = 1280, 720
 FPS = 60
+GRAVITY = 2200.0
+AIR_FRICTION = 0.95
+GROUND_FRICTION = 0.85
+
+PLAYER_SPEED = 520.0
+PLAYER_JUMP_SPEED = 980.0
+PLAYER_FLY_ACCEL = 1600.0
+PLAYER_MAX_FLY_SPEED = 800.0
+PLAYER_DASH_SPEED = 1100.0
+
+PLAYER_MAX_HEALTH = 1000
+PLAYER_MAX_ENERGY = 300
+
+PUNCH_COOLDOWN = 0.25
+HEAT_VISION_DPS = 250
+HEAT_VISION_ENERGY_DRAIN = 120 # per second
+BREATH_ENERGY_DRAIN = 90       # per second
+BLOCK_REDUCTION = 0.65
+
+ENEMY_BASE_HEALTH = {
+    'thug': 250,
+    'drone': 160,
+    'brute': 450
+}
+ENEMY_DAMAGE = {
+    'thug': 70,
+    'drone': 50,
+    'brute': 110
+}
+
+SPAWN_INTERVAL = 6.0  # seconds between waves
+SPAWN_TABLE = [
+    [('thug', 3), ('drone', 1)],
+    [('thug', 4), ('drone', 2)],
+    [('thug', 4), ('brute', 1)],
+    [('thug', 5), ('drone', 2), ('brute', 1)],
+    [('thug', 6), ('drone', 3), ('brute', 2)],
+]
+MAX_WAVES = len(SPAWN_TABLE)
 
 # Colors
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-RED = (235, 64, 52)
-GREEN = (46, 204, 113)
-BLUE = (52, 152, 219)
-YELLOW = (241, 196, 15)
-PURPLE = (155, 89, 182)
-ORANGE = (230, 126, 34)
-GREY = (100, 100, 100)
+WHITE  = (245, 245, 245)
+BLACK  = ( 15,  15,  20)
+RED    = (230,  50,  60)
+BLUE   = ( 60, 120, 255)
+CYAN   = ( 90, 220, 255)
+YELLOW = (255, 220,  80)
+GREEN  = ( 80, 220, 120)
+ORANGE = (255, 150,  60)
+PURPLE = (170,  90, 255)
+GRAY   = (130, 130, 140)
 
-# ---------------
-# SIMPLE UTILS
-# ---------------
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+# ==============================
+# UTILS
+# ==============================
+def clamp(x, lo, hi):
+    return max(lo, min(hi, x))
 
-def vec_length(vx, vy):
-    return math.hypot(vx, vy)
+def rect_from_pos_size(pos: Vec2, size: Tuple[int, int]) -> pygame.Rect:
+    return pygame.Rect(int(pos.x), int(pos.y), size[0], size[1])
 
-# ---------------
+def line_intersects_rect(p1: Vec2, p2: Vec2, rect: pygame.Rect) -> bool:
+    return rect.clipline(p1.x, p1.y, p2.x, p2.y)
+
+def draw_text(surface, text, pos, size=20, color=WHITE, center=False):
+    font = pygame.font.SysFont("consolas", size)
+    surf = font.render(text, True, color)
+    rect = surf.get_rect()
+    if center:
+        rect.center = (int(pos[0]), int(pos[1]))
+    else:
+        rect.topleft = (int(pos[0]), int(pos[1]))
+    surface.blit(surf, rect)
+
+# ==============================
 # GAME OBJECTS
-# ---------------
+# ==============================
+@dataclass
 class Particle:
-    def __init__(self, x, y, vx, vy, radius, color, life):
-        self.x, self.y = x, y
-        self.vx, self.vy = vx, vy
-        self.radius = radius
-        self.color = color
-        self.life = life
+    pos: Vec2
+    vel: Vec2
+    life: float
+    color: Tuple[int,int,int]
+    radius: float
 
     def update(self, dt):
-        self.x += self.vx * dt
-        self.y += self.vy * dt
         self.life -= dt
-        self.radius = max(0, self.radius - 10 * dt)
+        self.pos += self.vel * dt
+        self.vel *= 0.98
+        self.radius = max(0, self.radius - 40 * dt)
 
     def draw(self, surf, cam):
-        if self.life > 0 and self.radius > 0:
-            pygame.draw.circle(surf, self.color, (int(self.x - cam.x), int(self.y - cam.y)), max(1, int(self.radius)))
-
-class Camera:
-    def __init__(self):
-        self.x = 0
-        self.y = 0
-
-    def follow(self, target):
-        # Center camera on player with soft clamp
-        desired_x = target.x - WIDTH // 2 + target.w // 2
-        desired_y = target.y - HEIGHT // 2 + target.h // 2
-        self.x += (desired_x - self.x) * 0.08
-        self.y += (desired_y - self.y) * 0.08
+        if self.life <= 0 or self.radius <= 0: return
+        pygame.draw.circle(surf, self.color, (int(self.pos.x - cam.x), int(self.pos.y - cam.y)), int(self.radius))
 
 class Projectile:
-    def __init__(self, x, y, dx, dy, speed, damage, color, radius=5, lifetime=1.2, friendly=True):
-        self.x, self.y = x, y
-        self.dx, self.dy = dx, dy
-        self.speed = speed
-        self.damage = damage
+    def __init__(self, start: Vec2, end: Vec2, dps: float, duration: float, color: Tuple[int,int,int], width: int=4):
+        self.start = Vec2(start)
+        self.end = Vec2(end)
+        self.dps = dps
+        self.duration = duration
+        self.t = 0.0
         self.color = color
-        self.radius = radius
-        self.life = lifetime
-        self.friendly = friendly
-        self.alive = True
+        self.width = width
 
-        length = vec_length(dx, dy) or 1
-        self.vx = (dx / length) * speed
-        self.vy = (dy / length) * speed
+    def update(self, dt):
+        self.t += dt
 
-    def rect(self):
-        return pygame.Rect(int(self.x - self.radius), int(self.y - self.radius), int(self.radius*2), int(self.radius*2))
-
-    def update(self, dt, world_rect):
-        if not self.alive: return
-        self.x += self.vx * dt
-        self.y += self.vy * dt
-        self.life -= dt
-        if self.life <= 0 or not world_rect.collidepoint(self.x, self.y):
-            self.alive = False
+    @property
+    def alive(self):
+        return self.t < self.duration
 
     def draw(self, surf, cam):
-        if not self.alive: return
-        pygame.draw.circle(surf, self.color, (int(self.x - cam.x), int(self.y - cam.y)), int(self.radius))
+        alpha = clamp(1.0 - self.t / self.duration, 0.2, 1.0)
+        col = tuple(int(c * alpha) for c in self.color)
+        pygame.draw.line(surf, col,
+                         (int(self.start.x - cam.x), int(self.start.y - cam.y)),
+                         (int(self.end.x - cam.x), int(self.end.y - cam.y)), self.width)
+        # impact spark
+        pygame.draw.circle(surf, col, (int(self.end.x - cam.x), int(self.end.y - cam.y)), 6, 1)
 
 class Entity:
-    def __init__(self, x, y, w, h, color):
-        self.x, self.y = x, y
-        self.w, self.h = w, h
-        self.color = color
-        self.vx = 0
-        self.vy = 0
+    def __init__(self, x, y, w, h):
+        self.pos = Vec2(x, y)
+        self.size = (w, h)
+        self.vel = Vec2(0,0)
         self.on_ground = False
-        self.max_hp = 100
-        self.hp = self.max_hp
-        self.invuln = 0.0
+        self.health = 100
+        self.max_health = 100
+        self.facing = 1  # 1 right, -1 left
+        self.dead = False
 
+    @property
     def rect(self):
-        return pygame.Rect(int(self.x), int(self.y), self.w, self.h)
+        return rect_from_pos_size(self.pos, self.size)
 
-    def center(self):
-        r = self.rect()
-        return r.centerx, r.centery
+    def apply_gravity(self, dt):
+        self.vel.y += GRAVITY * dt
 
-    def take_damage(self, dmg, knockback=(0,0)):
-        if self.invuln > 0: 
-            return
-        self.hp -= dmg
-        self.invuln = 0.25
-        self.vx += knockback[0]
-        self.vy += knockback[1]
+    def move_and_collide(self, dt, platforms: List[pygame.Rect]):
+        # X
+        self.pos.x += self.vel.x * dt
+        r = self.rect
+        for p in platforms:
+            if r.colliderect(p):
+                if self.vel.x > 0:
+                    self.pos.x = p.left - self.size[0]
+                elif self.vel.x < 0:
+                    self.pos.x = p.right
+                self.vel.x = 0
+                r = self.rect
+        # Y
+        self.pos.y += self.vel.y * dt
+        r = self.rect
+        self.on_ground = False
+        for p in platforms:
+            if r.colliderect(p):
+                if self.vel.y > 0:
+                    self.pos.y = p.top - self.size[1]
+                    self.on_ground = True
+                elif self.vel.y < 0:
+                    self.pos.y = p.bottom
+                self.vel.y = 0
+                r = self.rect
 
-    def alive(self):
-        return self.hp > 0
-
-    def draw_healthbar(self, surf, cam):
-        r = self.rect().move(-cam.x, -cam.y)
-        pct = clamp(self.hp / self.max_hp, 0, 1)
-        back = pygame.Rect(r.x, r.y - 10, r.w, 6)
-        front = pygame.Rect(r.x, r.y - 10, int(r.w * pct), 6)
-        pygame.draw.rect(surf, GREY, back, border_radius=3)
-        pygame.draw.rect(surf, GREEN if pct > 0.35 else RED, front, border_radius=3)
+    def take_damage(self, amount: float, knockback: Vec2=Vec2()):
+        if self.dead: return
+        self.health -= amount
+        self.vel += knockback
+        if self.health <= 0:
+            self.dead = True
 
 class Player(Entity):
     def __init__(self, x, y):
-        super().__init__(x, y, 36, 48, BLUE)
-        self.speed = 280
-        self.fly_speed = 360
-        self.jump_power = -520
-        self.gravity = 1400
+        super().__init__(x, y, 54, 90)
+        self.color = BLUE
+        self.max_health = PLAYER_MAX_HEALTH
+        self.health = PLAYER_MAX_HEALTH
+        self.energy = PLAYER_MAX_ENERGY
+        self.combo = 0
+        self.combo_timer = 0.0
+        self.invuln_timer = 0.0
+        self.punch_cd = 0.0
+        self.is_blocking = False
         self.flying = False
-        self.cool_punch = 0
-        self.cool_laser = 0
-        self.cool_dash = 0
-        self.score = 0
+        self.dashing = False
+        self.dash_timer = 0.0
+        self.heat_vision_on = False
+        self.breath_on = False
 
-    def input(self, keys):
-        ax = 0
-        ay = 0
-
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            ax -= 1
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            ax += 1
-
-        if self.flying:
-            if keys[pygame.K_w] or keys[pygame.K_UP]:
-                ay -= 1
-            if keys[pygame.K_s] or keys[pygame.K_DOWN]:
-                ay += 1
-
-        return ax, ay
-
-    def attack_rect(self, facing):
-        # small rectangle in front for melee
-        r = self.rect()
-        if facing >= 0:
-            return pygame.Rect(r.right, r.y + 8, 28, r.h - 16)
-        else:
-            return pygame.Rect(r.left - 28, r.y + 8, 28, r.h - 16)
-
-    def update(self, dt, world_rect, keys, projectiles, particles):
-        spd = self.fly_speed if self.flying else self.speed
-        ax, ay = self.input(keys)
-
+    def update(self, dt, keys, platforms, projectiles: List[Projectile], particles: List[Particle],
+               enemies: List['Enemy']):
         # Timers
-        if self.invuln > 0: self.invuln -= dt
-        if self.cool_punch > 0: self.cool_punch -= dt
-        if self.cool_laser > 0: self.cool_laser -= dt
-        if self.cool_dash > 0: self.cool_dash -= dt
+        self.punch_cd = max(0.0, self.punch_cd - dt)
+        self.combo_timer = max(0.0, self.combo_timer - dt)
+        if self.combo_timer == 0.0: self.combo = 0
+        self.invuln_timer = max(0.0, self.invuln_timer - dt)
+        self.dash_timer = max(0.0, self.dash_timer - dt)
 
-        # Change mode
-        if keys[pygame.K_f]:
-            self.flying = True
-        if keys[pygame.K_g]:
-            self.flying = False
+        # Movement input
+        accel = 0.0
+        if keys[pygame.K_a]: accel -= 1.0
+        if keys[pygame.K_d]: accel += 1.0
+        self.facing = 1 if accel > 0 else (-1 if accel < 0 else self.facing)
 
-        # Movement
-        self.vx += ax * spd * 6 * dt
         if self.flying:
-            self.vy += ay * spd * 6 * dt
-            # air drag
-            self.vx *= 0.90
-            self.vy *= 0.90
+            # omni movement
+            target = Vec2(accel * PLAYER_MAX_FLY_SPEED, self.vel.y)
+            if keys[pygame.K_w]: target.y = -PLAYER_MAX_FLY_SPEED
+            elif keys[pygame.K_s]: target.y = PLAYER_MAX_FLY_SPEED
+            else: target.y = 0
+            # accelerate toward target
+            delta = target - self.vel
+            self.vel += delta * clamp(PLAYER_FLY_ACCEL * dt / (abs(delta.length())+1e-5), 0, 1)
+            self.vel = Vec2(clamp(self.vel.x, -PLAYER_MAX_FLY_SPEED, PLAYER_MAX_FLY_SPEED),
+                            clamp(self.vel.y, -PLAYER_MAX_FLY_SPEED, PLAYER_MAX_FLY_SPEED))
+            self.vel *= 0.99
         else:
-            # gravity
-            self.vy += self.gravity * dt
-            self.vx *= 0.85
+            # ground/air
+            self.vel.x += accel * PLAYER_SPEED * dt
+            if self.on_ground:
+                self.vel.x *= GROUND_FRICTION
+            else:
+                self.vel.x *= AIR_FRICTION
+            if keys[pygame.K_w] and self.on_ground:
+                self.vel.y = -PLAYER_JUMP_SPEED
+            self.apply_gravity(dt)
 
-        # Clamp velocities
-        maxv = 520 if self.flying else 380
-        self.vx = clamp(self.vx, -maxv, maxv)
-        self.vy = clamp(self.vy, -maxv, maxv)
+        # Toggle flying
+        for event in pygame.event.get(pygame.KEYDOWN):
+            pass  # drained by main; keep placeholder
 
-        # Dashing
-        if self.cool_dash <= 0 and keys[pygame.K_k]:
-            # dash in movement direction or facing
-            dirx = ax if ax != 0 else (1 if self.vx >= 0 else -1)
-            diry = ay if self.flying and ay != 0 else 0
-            mag = vec_length(dirx, diry)
-            if mag == 0: 
-                dirx = 1; diry = 0; mag = 1
-            self.vx = (dirx / mag) * (maxv * 1.65)
-            self.vy = (diry / mag) * (maxv * 1.65)
-            self.cool_dash = 0.65
-            # dash particles
-            cx, cy = self.center()
-            for _ in range(18):
-                ang = random.uniform(0, math.pi * 2)
-                sp = random.uniform(120, 260)
-                particles.append(Particle(cx, cy, math.cos(ang)*sp, math.sin(ang)*sp, random.randint(2,5), BLUE, 0.4))
+        # Abilities
+        self.is_blocking = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
 
-        # Apply movement
-        self.x += self.vx * dt
-        self.y += self.vy * dt
+        if keys[pygame.K_j] and self.punch_cd == 0:
+            self.melee_attack(enemies, particles)
+            self.punch_cd = PUNCH_COOLDOWN
 
-        # World bounds
-        if self.x < world_rect.left:
-            self.x = world_rect.left; self.vx = 0
-        if self.x + self.w > world_rect.right:
-            self.x = world_rect.right - self.w; self.vx = 0
-        if self.y < world_rect.top:
-            self.y = world_rect.top; self.vy = 0
-        if self.y + self.h > world_rect.bottom:
-            self.y = world_rect.bottom - self.h; self.vy = 0
-            self.on_ground = True
-        else:
-            self.on_ground = False
+        # Heat vision: hold K
+        self.heat_vision_on = keys[pygame.K_k] and self.energy > 0
+        if self.heat_vision_on:
+            self.energy = max(0, self.energy - HEAT_VISION_ENERGY_DRAIN * dt)
+            start = Vec2(self.rect.centerx, self.rect.centery - 18)
+            dir_vec = Vec2(self.facing, -0.08)  # slight upward angle
+            end = start + dir_vec * 900
+            beam = Projectile(start, end, HEAT_VISION_DPS, 0.06, ORANGE, width=5)
+            projectiles.append(beam)
 
-        # Attacks
-        facing = 1 if self.vx >= 0 else -1
+        # Breath: hold L
+        self.breath_on = keys[pygame.K_l] and self.energy > 0
+        if self.breath_on:
+            self.energy = max(0, self.energy - BREATH_ENERGY_DRAIN * dt)
+            self.super_breath(enemies, particles)
 
-        # Punch
-        if self.cool_punch <= 0 and keys[pygame.K_SPACE]:
-            self.cool_punch = 0.28
-            # spawn punch particles
-            ar = self.attack_rect(facing)
-            cx, cy = ar.center
+        # Move and collide
+        self.move_and_collide(dt, platforms)
+
+        # Regenerate energy slowly when not using powers
+        if not self.heat_vision_on and not self.breath_on:
+            self.energy = min(PLAYER_MAX_ENERGY, self.energy + 40 * dt)
+
+    def melee_attack(self, enemies, particles):
+        # simple 3-hit chain based on combo timer
+        self.combo = min(3, self.combo + 1)
+        self.combo_timer = 0.8
+        reach = 64 + self.combo * 6
+        dmg = 120 + self.combo * 30
+        kb = 380 + self.combo * 60
+        arc_center = Vec2(self.rect.centerx + self.facing * (self.size[0]//2 + 12), self.rect.centery)
+        hit_any = False
+        for e in enemies:
+            if e.dead: continue
+            to_e = Vec2(e.rect.centerx - arc_center.x, e.rect.centery - arc_center.y)
+            if (0 <= to_e.x * self.facing) and (to_e.length() < reach) and abs(to_e.y) < 60:
+                e.take_damage(dmg, Vec2(self.facing*kb, -180))
+                e.stun(0.2 + 0.05*self.combo)
+                hit_any = True
+                # hit particles
+                for _ in range(12):
+                    p = Particle(Vec2(e.rect.centerx, e.rect.centery),
+                                 Vec2(random.uniform(-180,180), random.uniform(-220,-60)),
+                                 0.4, YELLOW, random.uniform(2,4))
+                    particles.append(p)
+        if hit_any:
+            # swoosh
             for _ in range(10):
-                ang = random.uniform(-0.6, 0.6) + (0 if facing>0 else math.pi)
-                sp = random.uniform(140, 240)
-                particles.append(Particle(cx, cy, math.cos(ang)*sp, math.sin(ang)*sp, random.randint(2,4), YELLOW, 0.25))
-            self._pending_punch = (ar, 28, (facing*220, -80 if not self.flying else 0))
-        else:
-            self._pending_punch = None
+                p = Particle(arc_center + Vec2(self.facing*20, 0) + Vec2(random.uniform(-10,10), random.uniform(-10,10)),
+                             Vec2(self.facing*random.uniform(200,320), random.uniform(-60,60)),
+                             0.18, WHITE, random.uniform(2,3))
+                particles.append(p)
 
-        # Heat vision (J)
-        if self.cool_laser <= 0 and keys[pygame.K_j]:
-            self.cool_laser = 0.18
-            # fire small fast projectile
-            cx, cy = self.center()
-            dirx = 1 if facing>0 else -1
-            projectiles.append(Projectile(cx + dirx*22, cy-6, dirx, 0, 780, 10, RED, radius=4, lifetime=0.9, friendly=True))
+    def super_breath(self, enemies, particles):
+        # Cone push
+        origin = Vec2(self.rect.centerx + self.facing * (self.size[0]//2 + 8), self.rect.centery - 10)
+        cone_angle = math.radians(28)
+        max_dist = 360
+        for e in enemies:
+            if e.dead: continue
+            v = Vec2(e.rect.centerx - origin.x, e.rect.centery - origin.y)
+            dist = v.length()
+            if dist == 0: continue
+            if dist < max_dist:
+                dir_f = Vec2(self.facing, 0)
+                ang = dir_f.angle_to(v)
+                if abs(ang) < math.degrees(cone_angle):
+                    force = (1.0 - dist/max_dist)
+                    e.vel += Vec2(self.facing * (600 * force + 120), -120 * force)
+                    e.stun(0.2)
+                    e.take_damage(8 * force)
+        # breath mist particles
+        for _ in range(30):
+            p = Particle(origin + Vec2(random.uniform(0, 40), random.uniform(-12,12))*self.facing,
+                         Vec2(self.facing*random.uniform(300, 480), random.uniform(-40, 40)),
+                         0.25, CYAN, random.uniform(2,4))
+            particles.append(p)
+
+    def toggle_fly(self):
+        self.flying = not self.flying
+        if self.flying:
+            self.vel.y = 0
+
+    def draw(self, surf, cam):
+        r = self.rect
+        # cape
+        cape_pts = [(r.left - self.facing*8 - cam.x, r.top + 16 - cam.y),
+                    (r.left - self.facing*40 - cam.x, r.top + 40 - cam.y),
+                    (r.left - self.facing*18 - cam.x, r.bottom - 10 - cam.y)]
+        pygame.draw.polygon(surf, RED, cape_pts)
+        pygame.draw.rect(surf, self.color, (r.x - cam.x, r.y - cam.y, r.w, r.h), border_radius=6)
+        # emblem
+        pygame.draw.rect(surf, YELLOW, (r.centerx - 6 - cam.x, r.y + 22 - cam.y, 12, 10), border_radius=2)
+        # eyes glow if heat vision
+        if self.heat_vision_on:
+            pygame.draw.circle(surf, ORANGE, (r.centerx + self.facing*12 - cam.x, r.y + 24 - cam.y), 4)
 
 class Enemy(Entity):
-    def __init__(self, x, y, kind="grunt"):
-        super().__init__(x, y, 34, 44, ORANGE if kind=="grunt" else PURPLE)
-        self.kind = kind
-        if kind == "grunt":
-            self.max_hp = 50; self.hp = self.max_hp
-            self.speed = 180
-            self.damage = 8
-            self.attack_cool = 0
-        elif kind == "ranged":
-            self.max_hp = 40; self.hp = self.max_hp
-            self.speed = 140
-            self.damage = 6
-            self.shoot_cool = 1.2
-            self.timer = random.uniform(0, 1.2)
-        elif kind == "brute":
-            self.w, self.h = 46, 58
-            self.max_hp = 140; self.hp = self.max_hp
-            self.speed = 120
-            self.damage = 18
-            self.attack_cool = 0
-
-    def update(self, dt, player, world_rect, projectiles, particles):
-        if self.invuln > 0: self.invuln -= dt
-
-        # AI
-        dx = (player.x + player.w/2) - (self.x + self.w/2)
-        dy = (player.y + player.h/2) - (self.y + self.h/2)
-        dist = max(1, math.hypot(dx, dy))
-
-        if self.kind == "ranged":
-            # keep distance, strafe a bit
-            desired = 240
-            if dist < desired - 40:
-                self.vx -= (dx/dist) * self.speed * dt
-                self.vy -= (dy/dist) * self.speed * dt
-            elif dist > desired + 40:
-                self.vx += (dx/dist) * self.speed * dt
-                self.vy += (dy/dist) * self.speed * dt
-            else:
-                self.vx *= 0.9; self.vy *= 0.9
-
-            # shoot
-            self.timer -= dt
-            if self.timer <= 0:
-                self.timer = self.shoot_cool
-                cx, cy = self.center()
-                projectiles.append(Projectile(cx, cy, dx, dy, 360, 8, PURPLE, radius=6, lifetime=2.2, friendly=False))
-
+    def __init__(self, x, y, etype='thug'):
+        if etype == 'drone':
+            super().__init__(x, y, 48, 32)
+        elif etype == 'brute':
+            super().__init__(x, y, 64, 96)
         else:
-            # chase
-            self.vx += (dx/dist) * self.speed * dt
-            self.vy += (dy/dist) * (self.speed * (0.7 if self.kind=="brute" else 1.0)) * dt
+            super().__init__(x, y, 48, 80)
+        self.etype = etype
+        self.color = ORANGE if etype=='drone' else (PURPLE if etype=='brute' else GREEN)
+        self.max_health = ENEMY_BASE_HEALTH[etype]
+        self.health = self.max_health
+        self.state = 'idle'
+        self.state_timer = 0.0
+        self.attack_cd = random.uniform(0.4, 1.1)
+        self.stun_timer = 0.0
+        self.shoot_cd = 0.0
 
-            # attack if close
-            if dist < (70 if self.kind=="brute" else 50):
-                if getattr(self, "attack_cool", 0) <= 0:
-                    self.attack_cool = 0.9 if self.kind=="brute" else 0.7
-                    # melee "hit"
-                    if player.alive():
-                        player.take_damage(self.damage, knockback=(dx/dist*160, -120))
-                        # particles
-                        cx, cy = player.center()
-                        for _ in range(12):
-                            ang = random.uniform(0, math.pi*2)
-                            sp = random.uniform(90, 240)
-                            particles.append(Particle(cx, cy, math.cos(ang)*sp, math.sin(ang)*sp, random.randint(2,5), RED, 0.35))
+    def ai(self, dt, player: Player, platforms: List[pygame.Rect], particles: List[Particle], enemy_bullets: List[Projectile]):
+        if self.dead: return
+        self.state_timer += dt
+        self.attack_cd = max(0.0, self.attack_cd - dt)
+        self.stun_timer = max(0.0, self.stun_timer - dt)
+        self.shoot_cd = max(0.0, self.shoot_cd - dt)
+        if self.stun_timer > 0:
+            # limited control
+            self.apply_gravity(dt)
+            self.move_and_collide(dt, platforms)
+            return
+
+        to_player = Vec2(player.rect.centerx - self.rect.centerx, player.rect.centery - self.rect.centery)
+        dist = to_player.length()
+        if dist > 0: self.facing = 1 if to_player.x > 0 else -1
+
+        if self.etype == 'drone':
+            # hover around player and shoot
+            target = Vec2(player.rect.centerx - self.size[0]/2 - 140*self.facing, player.rect.centery - 160)
+            desired = target - self.pos
+            self.vel += desired * 0.9 * dt
+            self.vel *= 0.92
+            self.move_and_collide(dt, platforms)
+            # shoot
+            if dist < 720 and self.shoot_cd == 0.0:
+                start = Vec2(self.rect.centerx, self.rect.centery)
+                dir_vec = (player.rect.center - self.rect.center)
+                if dir_vec.length() == 0: dir_vec = Vec2(self.facing,0)
+                dir_vec = Vec2(dir_vec).normalize()
+                end = start + dir_vec * 900
+                bullet = Projectile(start, end, dps=120, duration=0.08, color=GREEN, width=3)
+                enemy_bullets.append(bullet)
+                self.shoot_cd = 1.2
+        else:
+            # ground enemies
+            if dist > 80:
+                self.apply_gravity(dt)
+                self.vel.x += self.facing * 460 * dt
+                self.vel.x *= 0.86
+                self.move_and_collide(dt, platforms)
             else:
-                self.attack_cool = max(0, getattr(self, "attack_cool", 0) - dt)
+                self.vel.x *= 0.8
+                self.apply_gravity(dt)
+                self.move_and_collide(dt, platforms)
+                if self.attack_cd == 0.0 and self.on_ground:
+                    self.attack_cd = 1.1 if self.etype=='brute' else 0.7
+                    # melee hitbox
+                    reach = 64 if self.etype=='thug' else 84
+                    dmg = ENEMY_DAMAGE[self.etype]
+                    kb = 200 if self.etype=='thug' else 320
+                    arc_center = Vec2(self.rect.centerx + self.facing*(self.size[0]//2+10), self.rect.centery)
+                    v = Vec2(player.rect.centerx - arc_center.x, player.rect.centery - arc_center.y)
+                    if (0 <= v.x * self.facing) and (v.length() < reach) and abs(v.y) < 60:
+                        final_dmg = dmg * (0.35 if player.is_blocking else 1.0)
+                        player.take_damage(final_dmg, Vec2(self.facing*kb, -140))
+                        # particles
+                        for _ in range(10):
+                            particles.append(Particle(Vec2(player.rect.centerx, player.rect.centery),
+                                                      Vec2(random.uniform(-180,180), random.uniform(-220,-20)),
+                                                      0.25, RED, random.uniform(2,3)))
 
-        # Damping and movement
-        self.vx = clamp(self.vx, -260, 260)
-        self.vy = clamp(self.vy, -260, 260)
-        self.x += self.vx * dt
-        self.y += self.vy * dt
-        self.vx *= 0.92
-        self.vy *= 0.92
+    def stun(self, t):
+        self.stun_timer = max(self.stun_timer, t)
 
-        # bounds
-        if self.x < world_rect.left: self.x = world_rect.left; self.vx = abs(self.vx)
-        if self.x + self.w > world_rect.right: self.x = world_rect.right - self.w; self.vx = -abs(self.vx)
-        if self.y < world_rect.top: self.y = world_rect.top; self.vy = abs(self.vy)
-        if self.y + self.h > world_rect.bottom: self.y = world_rect.bottom - self.h; self.vy = -abs(self.vy)
+    def draw(self, surf, cam):
+        r = self.rect
+        pygame.draw.rect(surf, self.color, (r.x - cam.x, r.y - cam.y, r.w, r.h), border_radius=5)
+        # health bar
+        hpw = int( r.w * clamp(self.health / self.max_health, 0, 1) )
+        pygame.draw.rect(surf, RED, (r.x - cam.x, r.y - 10 - cam.y, r.w, 6), border_radius=3)
+        pygame.draw.rect(surf, GREEN, (r.x - cam.x, r.y - 10 - cam.y, hpw, 6), border_radius=3)
 
+# ==============================
+# LEVEL / WORLD
+# ==============================
+def build_level() -> Tuple[List[pygame.Rect], List[pygame.Rect]]:
+    platforms: List[pygame.Rect] = []
+    hazards: List[pygame.Rect] = []
+
+    ground = pygame.Rect(-2000, HEIGHT - 80, 5000, 160)
+    platforms.append(ground)
+    # scattered platforms
+    platforms += [
+        pygame.Rect(-200, HEIGHT-240, 300, 24),
+        pygame.Rect(180, HEIGHT-360, 240, 24),
+        pygame.Rect(520, HEIGHT-260, 300, 24),
+        pygame.Rect(980, HEIGHT-200, 300, 24),
+        pygame.Rect(1350, HEIGHT-340, 260, 24)
+    ]
+    # hazards (electric floor patches)
+    hazards += [
+        pygame.Rect(300, HEIGHT-80, 120, 10),
+        pygame.Rect(860, HEIGHT-80, 120, 10),
+    ]
+    return platforms, hazards
+
+# ==============================
+# GAME
+# ==============================
 class Game:
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("Super Hero: Sky Clash (Python)")
+        pygame.display.set_caption("Man of Tomorrow - Python Combat Prototype")
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("consolas", 20)
-        self.bigfont = pygame.font.SysFont("consolas", 64, bold=True)
+        self.running = True
 
-        self.reset()
+        self.platforms, self.hazards = build_level()
+        self.player = Player(80, HEIGHT - 300)
+        self.enemies: List[Enemy] = []
+        self.particles: List[Particle] = []
+        self.projectiles: List[Projectile] = []   # player beams
+        self.enemy_beams: List[Projectile] = []   # enemy shots
 
-    def reset(self):
-        self.world_rect = pygame.Rect(-1200, -600, 2400, 1600)
-        self.player = Player(0, 0)
-        self.enemies = []
-        self.projectiles = []
-        self.particles = []
-        self.camera = Camera()
-        self.spawn_timer = 0
-        self.wave = 1
+        self.camera = Vec2(0,0)
+        self.wave_index = 0
+        self.spawn_timer = 1.5
+        self.score = 0
         self.game_over = False
-        self.boss_spawned = False
-        self.highscore = 0
 
-    def spawn_enemy_wave(self):
-        count = 3 + self.wave
-        for _ in range(count):
-            kind_roll = random.random()
-            if kind_roll < 0.65:
-                kind = "grunt"
-            elif kind_roll < 0.9:
-                kind = "ranged"
-            else:
-                kind = "brute"
-            x = random.randint(self.world_rect.left+60, self.world_rect.right-60)
-            y = random.randint(self.world_rect.top+60, self.world_rect.bottom-60)
-            self.enemies.append(Enemy(x, y, kind=kind))
+    def spawn_wave(self):
+        if self.wave_index >= MAX_WAVES: return
+        plan = SPAWN_TABLE[self.wave_index]
+        for etype, count in plan:
+            for _ in range(count):
+                x = random.choice([-800, -400, 500, 1200, 1600]) + random.randint(-80,80)
+                y = HEIGHT - 400 if etype=='drone' else HEIGHT - 200
+                self.enemies.append(Enemy(x, y, etype))
+        self.wave_index += 1
 
-    def spawn_boss(self):
-        boss = Enemy(self.world_rect.centerx - 30, self.world_rect.top + 80, kind="brute")
-        boss.max_hp = 400; boss.hp = boss.max_hp
-        boss.w, boss.h = 58, 72
-        boss.speed = 140
-        boss.damage = 24
-        self.enemies.append(boss)
-        self.boss_spawned = True
-
-    def handle_collisions(self):
-        # projectiles vs entities
-        for p in self.projectiles:
-            if not p.alive: continue
-            if p.friendly:
-                for e in self.enemies:
-                    if e.alive() and p.rect().colliderect(e.rect()):
-                        e.take_damage(p.damage, knockback=(p.vx*0.06, p.vy*0.06))
-                        p.alive = False
-                        cx, cy = p.x, p.y
-                        for _ in range(8):
-                            ang = random.uniform(0, math.pi*2)
-                            sp = random.uniform(60, 160)
-                            self.particles.append(Particle(cx, cy, math.cos(ang)*sp, math.sin(ang)*sp, random.randint(2,4), YELLOW, 0.25))
-            else:
-                if self.player.alive() and p.rect().colliderect(self.player.rect()):
-                    self.player.take_damage(p.damage, knockback=(p.vx*0.05, -60))
-                    p.alive = False
-
-        # player melee
-        if getattr(self.player, "_pending_punch", None):
-            ar, dmg, kb = self.player._pending_punch
-            for e in self.enemies:
-                if e.alive() and ar.colliderect(e.rect()):
-                    e.take_damage(dmg, knockback=kb)
-                    # impact particles
-                    cx, cy = ar.center
-                    for _ in range(12):
-                        ang = random.uniform(0, math.pi*2)
-                        sp = random.uniform(120, 260)
-                        self.particles.append(Particle(cx, cy, math.cos(ang)*sp, math.sin(ang)*sp, random.randint(2,5), ORANGE, 0.3))
-
-        # enemies touching player
-        for e in self.enemies:
-            if e.alive() and self.player.alive() and e.rect().colliderect(self.player.rect()):
-                self.player.take_damage(4, knockback=(math.copysign(140, self.player.x - e.x), -80))
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                if event.key == pygame.K_f:
+                    self.player.toggle_fly()
+                if event.key == pygame.K_SPACE:
+                    # quick dash
+                    self.player.vel.x = self.player.facing * PLAYER_DASH_SPEED
 
     def update(self, dt):
-        keys = pygame.key.get_pressed()
         if self.game_over:
-            if keys[pygame.K_r]:
-                self.reset()
             return
 
-        self.player.update(dt, self.world_rect, keys, self.projectiles, self.particles)
+        self.handle_events()
+        keys = pygame.key.get_pressed()
 
-        # update enemies
-        for e in self.enemies:
-            if e.alive():
-                e.update(dt, self.player, self.world_rect, self.projectiles, self.particles)
-
-        # cull dead
-        alive_enemies = []
-        for e in self.enemies:
-            if e.alive():
-                alive_enemies.append(e)
-            else:
-                self.player.score += 10 if e.kind != "brute" else 25
-                # death burst
-                cx, cy = e.center()
-                for _ in range(18):
-                    ang = random.uniform(0, math.pi*2)
-                    sp = random.uniform(140, 320)
-                    self.particles.append(Particle(cx, cy, math.cos(ang)*sp, math.sin(ang)*sp, random.randint(2,6), ORANGE, 0.5))
-        self.enemies = alive_enemies
-
-        # update projectiles
-        for p in self.projectiles:
-            p.update(dt, self.world_rect)
-        self.projectiles = [p for p in self.projectiles if p.alive]
-
-        # particles
-        for part in self.particles:
-            part.update(dt)
-        self.particles = [pa for pa in self.particles if pa.life > 0 and pa.radius > 0]
-
-        # spawn logic
+        # Waves
         self.spawn_timer -= dt
         if self.spawn_timer <= 0:
-            self.spawn_timer = max(0.5, 2.5 - self.wave * 0.08)
-            # occasional wave
-            if random.random() < 0.10:
-                self.wave += 1
-                self.spawn_enemy_wave()
+            self.spawn_wave()
+            self.spawn_timer = SPAWN_INTERVAL
+
+        # Update player
+        self.player.update(dt, keys, self.platforms, self.projectiles, self.particles, self.enemies)
+
+        # Enemy AI
+        for e in self.enemies:
+            e.ai(dt, self.player, self.platforms, self.particles, self.enemy_beams)
+
+        # Projectiles influence
+        for beam in self.projectiles:
+            beam.update(dt)
+            # damage enemies hit by beam
+            for e in self.enemies:
+                if e.dead: continue
+                if line_intersects_rect(beam.start, beam.end, e.rect):
+                    e.take_damage(beam.dps * dt, Vec2(self.player.facing*40, -20))
+        for beam in self.enemy_beams:
+            beam.update(dt)
+            if line_intersects_rect(beam.start, beam.end, self.player.rect):
+                dmg = 60 * dt
+                if self.player.is_blocking: dmg *= (1.0 - BLOCK_REDUCTION)
+                self.player.take_damage(dmg, Vec2(0, -40))
+
+        # Hazards
+        for hz in self.hazards:
+            if self.player.rect.colliderect(hz):
+                self.player.take_damage(40 * dt, Vec2(0, -20))
+                if random.random()<0.12:
+                    self.particles.append(Particle(Vec2(self.player.rect.centerx, hz.top),
+                                                   Vec2(random.uniform(-80,80), random.uniform(-120,-40)),
+                                                   0.2, CYAN, random.uniform(2,3)))
+
+        # Remove dead beams
+        self.projectiles = [b for b in self.projectiles if b.alive]
+        self.enemy_beams = [b for b in self.enemy_beams if b.alive]
+
+        # Particles
+        for p in self.particles:
+            p.update(dt)
+        self.particles = [p for p in self.particles if p.life > 0 and p.radius > 0]
+
+        # Cull dead enemies, add score
+        alive = []
+        for e in self.enemies:
+            if e.dead:
+                self.score += 25 if e.etype=='thug' else (40 if e.etype=='drone' else 80)
+                for _ in range(14):
+                    self.particles.append(Particle(Vec2(e.rect.centerx, e.rect.centery),
+                                                   Vec2(random.uniform(-220,220), random.uniform(-260, -60)),
+                                                   0.5, ORANGE, random.uniform(2,4)))
             else:
-                # trickle spawn
-                kind = random.choices(["grunt","ranged","brute"], weights=[0.6,0.3,0.1])[0]
-                x = random.choice([self.world_rect.left+40, self.world_rect.right-80])
-                y = random.randint(self.world_rect.top+80, self.world_rect.bottom-80)
-                self.enemies.append(Enemy(x, y, kind=kind))
+                alive.append(e)
+        self.enemies = alive
 
-        # boss condition
-        if not self.boss_spawned and self.player.score >= 200:
-            self.spawn_boss()
+        # Camera follow
+        target_cam_x = self.player.rect.centerx - WIDTH/2
+        target_cam_y = self.player.rect.centery - HEIGHT/2
+        self.camera.x += (target_cam_x - self.camera.x) * 0.08
+        self.camera.y += (target_cam_y - self.camera.y) * 0.08
 
-        # camera follow
-        self.camera.follow(self.player)
-
-        # collisions
-        self.handle_collisions()
-
-        # game over
-        if not self.player.alive():
-            self.highscore = max(self.highscore, self.player.score)
+        # Death
+        if self.player.health <= 0:
             self.game_over = True
 
-    def draw_grid(self, surf, cam):
-        # parallax backgrounds as simple moving bands
-        surf.fill((18, 22, 28))
-        for i, speed in enumerate([0.2, 0.4, 0.7]):
-            offset = int((-cam.x * speed) % 160)
-            color = (24 + i*10, 28 + i*10, 40 + i*10)
-            for x in range(-160, WIDTH+160, 160):
-                pygame.draw.rect(surf, color, pygame.Rect(x+offset, 0, 140, HEIGHT))
+    def draw_bg(self, surf):
+        surf.fill(BLACK)
+        # parallax skyline
+        for i, y in enumerate([HEIGHT-300, HEIGHT-260, HEIGHT-220]):
+            offset = self.camera.x * (0.2 + i*0.1)
+            for x in range(-2000, 3000, 160):
+                rect = pygame.Rect(int(x - offset % 160), y, 120, 400)
+                pygame.draw.rect(surf, (30+10*i, 30+10*i, 46+10*i), rect)
+        # ground line
+        pygame.draw.line(surf, (60,60,70), (0, HEIGHT-80 - self.camera.y), (WIDTH, HEIGHT-80 - self.camera.y), 2)
 
-        # world bounds
-        wr = self.world_rect.move(-cam.x, -cam.y)
-        pygame.draw.rect(surf, (60, 66, 80), wr, 4, border_radius=12)
+    def draw_level(self, surf):
+        for p in self.platforms:
+            pr = pygame.Rect(p.x - self.camera.x, p.y - self.camera.y, p.w, p.h)
+            pygame.draw.rect(surf, (70, 80, 90), pr, border_radius=6)
+        for hz in self.hazards:
+            hr = pygame.Rect(hz.x - self.camera.x, hz.y - self.camera.y, hz.w, hz.h)
+            pygame.draw.rect(surf, CYAN, hr)
 
-    def draw(self):
-        self.draw_grid(self.screen, self.camera)
+    def draw_hud(self, surf):
+        # Health
+        x, y = 24, 20
+        w = 360
+        pygame.draw.rect(surf, RED, (x, y, w, 18), border_radius=9)
+        hpw = int(w * clamp(self.player.health / self.player.max_health, 0, 1))
+        pygame.draw.rect(surf, GREEN, (x, y, hpw, 18), border_radius=9)
+        draw_text(surf, f"HP: {int(self.player.health)} / {PLAYER_MAX_HEALTH}", (x+8, y-2), size=18)
 
-        # draw particles behind
-        for pa in self.particles:
-            pa.draw(self.screen, self.camera)
+        # Energy
+        y2 = y + 30
+        pygame.draw.rect(surf, (40,80,120), (x, y2, w, 14), border_radius=7)
+        enw = int(w * clamp(self.player.energy / PLAYER_MAX_ENERGY, 0, 1))
+        pygame.draw.rect(surf, CYAN, (x, y2, enw, 14), border_radius=7)
+        draw_text(surf, f"Energy: {int(self.player.energy)} / {PLAYER_MAX_ENERGY}", (x+8, y2-4), size=16)
 
-        # draw projectiles
-        for p in self.projectiles:
-            p.draw(self.screen, self.camera)
+        # Score / wave
+        draw_text(surf, f"Score: {self.score}", (WIDTH-220, 20), size=22)
+        draw_text(surf, f"Wave: {min(self.wave_index+1, MAX_WAVES)}/{MAX_WAVES}", (WIDTH-220, 46), size=18)
 
-        # draw entities
-        def draw_entity(e, outline_color):
-            r = e.rect().move(-self.camera.x, -self.camera.y)
-            # invuln blink
-            if e.invuln > 0 and int(pygame.time.get_ticks()*0.02) % 2 == 0:
-                return
-            pygame.draw.rect(self.screen, e.color, r, border_radius=6)
-            pygame.draw.rect(self.screen, outline_color, r, 2, border_radius=6)
-            e.draw_healthbar(self.screen, self.camera)
-
-        draw_entity(self.player, (200, 220, 255))
-        for e in self.enemies:
-            draw_entity(e, (255, 215, 180) if e.kind=="grunt" else (200, 180, 255))
-
-        # UI
-        hp_txt = self.font.render(f"HP: {int(self.player.hp)}/{self.player.max_hp}", True, WHITE)
-        score_txt = self.font.render(f"Score: {self.player.score}", True, WHITE)
-        wave_txt = self.font.render(f"Wave: {self.wave}", True, WHITE)
-        self.screen.blit(hp_txt, (14, 12))
-        self.screen.blit(score_txt, (14, 36))
-        self.screen.blit(wave_txt, (14, 60))
-
-        tips = [
-            "Move: WASD / Arrow keys",
-            "Fly: F to start, G to stop",
-            "Punch: SPACE   |   Heat Vision: J",
-            "Dash: K   |   Restart: R (when down)",
+        # Controls
+        controls = [
+            "Move: A/D   Jump: W   Fly Toggle: F   Dash: Space",
+            "Punch: J   Heat Vision (hold): K   Super Breath (hold): L   Block: Shift",
         ]
-        for i, t in enumerate(tips):
-            txt = self.font.render(t, True, GREY)
-            self.screen.blit(txt, (WIDTH - txt.get_width() - 14, 12 + i*22))
+        draw_text(surf, controls[0], (24, HEIGHT-56), size=18)
+        draw_text(surf, controls[1], (24, HEIGHT-32), size=18)
 
         if self.game_over:
-            s1 = self.bigfont.render("YOU FELL!", True, RED)
-            s2 = self.font.render("Press R to restart", True, WHITE)
-            s3 = self.font.render(f"Score: {self.player.score}  Highscore: {self.highscore}", True, WHITE)
-            self.screen.blit(s1, (WIDTH//2 - s1.get_width()//2, HEIGHT//2 - 80))
-            self.screen.blit(s2, (WIDTH//2 - s2.get_width()//2, HEIGHT//2 - 8))
-            self.screen.blit(s3, (WIDTH//2 - s3.get_width()//2, HEIGHT//2 + 24))
+            draw_text(surf, "YOU'RE DOWN! Press Esc to Exit", (WIDTH/2, HEIGHT/2), 36, ORANGE, center=True)
 
+    def draw(self):
+        self.draw_bg(self.screen)
+        self.draw_level(self.screen)
+
+        # Beams under/over?
+        for beam in self.enemy_beams:
+            beam.draw(self.screen, self.camera)
+
+        for e in self.enemies:
+            e.draw(self.screen, self.camera)
+
+        for beam in self.projectiles:
+            beam.draw(self.screen, self.camera)
+
+        self.player.draw(self.screen, self.camera)
+
+        for p in self.particles:
+            p.draw(self.screen, self.camera)
+
+        self.draw_hud(self.screen)
         pygame.display.flip()
 
     def run(self):
-        while True:
+        while self.running:
             dt = self.clock.tick(FPS) / 1000.0
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-
             self.update(dt)
             self.draw()
+        pygame.quit()
 
-if __name__ == "__main__":
-    Game().run()
-'''
+def main():
+    try:
+        Game().run()
+    except Exception as e:
+        print("Error:", e)
+        pygame.quit()
+        sys.exit(1)
 
-path = "/mnt/data/super_hero_game.py"
-with open(path, "w", encoding="utf-8") as f:
+if __name__ == '__main__':
+    main()
+"""
+# Write the code to a file
+with open('/mnt/data/superman_game.py', 'w', encoding='utf-8') as f:
     f.write(code)
 
-print(f"Wrote game to {path}")
+print("Created /mnt/data/superman_game.py")
