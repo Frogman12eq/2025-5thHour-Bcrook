@@ -27,7 +27,7 @@ if C % 2 == 0:
 else:
     print("C is not an even number")
 #7. Create a variable whose value is 3 + a randomly generated number between 1 and 20
-variable = 3 + random.randint(1,10)
+variable = 3 + random.randint(1,20)
 print(variable)
 #8. Make an if statement that prints if the variable from #7 is greater than, less than, or equal to A + B + C.
 if variable > A + B + C:
