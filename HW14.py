@@ -35,6 +35,7 @@ for d in input("Give me a word: ")[::-1]:
     print(d)
 #6. Create a list containing 10 integers of your choice and print the list.
 c= [1,2,3,4,5,6,7,8,9,1]
+print(c)
 #7. Create two empty variables named evenNumbers and oddNumbers.
 even=0
 odd=0
