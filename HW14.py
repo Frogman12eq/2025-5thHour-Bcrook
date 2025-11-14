@@ -5,7 +5,7 @@ import random
 import time
 #1. Create a for loop with variable i that counts down from 5 to 1 and then prints "Hello World!"
 #at the end.
-'''
+
 for i in range(5,0,-1):
     time.sleep(0.5)
     print(i)
@@ -24,7 +24,7 @@ for a in range(1,31):
         continue
     else:
         print(a)
-    '''
+
 #4. Create a for loop that prints 5 different animals from a list.
 animals= ["Bat", "Cat", "Dog", "Dolphin", "Tiger"]
 for animal in animals:
