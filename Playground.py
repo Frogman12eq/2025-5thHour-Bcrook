@@ -42,6 +42,8 @@ if left_right == "Left":
     print("you went left")
     if zombie_location == "Zombie":
         print("Enemy ahead")
+    else:
+        print("You went right")
 
 
 
