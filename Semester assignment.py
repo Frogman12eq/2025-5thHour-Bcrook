@@ -102,20 +102,40 @@ villain_health = (enemyDict["Dragon"]["HP"]) + (enemyDict["Dragon"]["AC"])
 #the character deals double damage. If the d20 rolled to attack is an unmodified ("natural") 1,
 #the attack automatically misses
 hero_atk_roll= random.randint(1,20)
-if hero_atk_roll == 20:
-    print("Automatic hit, that's a critical")
-elif hero_atk_roll == 1:
-    print("Aw shucks that's a critical failure")
-elif hero_atk_roll + (partyDict["Astarion"]["AtkMod"]) >= (enemyDict["Dragon"]["AC"]):
-    print("That's a hit")
-        print(villain_health)
-else:
-    print("That's a miss")
+hero_damage_roll= (partyDict["Astarion"]["Damage"] + partyDict["Astarion"]["AtkMod"])
+while villain_health > 0:
+    if hero_atk_roll == 20:
+        print("Automatic hit, that's a critical")
+    elif hero_atk_roll == 1:
+        print("Aw shucks that's a critical failure")
+    elif hero_atk_roll + (partyDict["Astarion"]["AtkMod"]) >= (enemyDict["Dragon"]["AC"]):
+        print("That's a hit")
+    else:
+        print("That's a miss")
 print(hero_atk_roll)
+print(villain_health)
+print(villain_health - hero_damage_roll)
 
+hero_health = (partyDict["Astarion"]["HP"]) + (partyDict["Astarion"]["AC"])
+villain_atk_roll = random.randint(1,20)
+villain_damage_roll = (enemyDict["Dragon"]["Damage"] + enemyDict["Dragon"]["AtkMod"])
+
+while hero_health > 0:
+    if hero_atk_roll == 20:
+        print("Automatic hit, that's a critical")
+    elif hero_atk_roll == 1:
+        print("Aw shucks that's a critical failure")
+    elif hero_atk_roll + (enemyDict["Dragon"]["AtkMod"]) >= (partyDict["Astarion"]["AC"]):
+        print("That's a hit")
+    else:
+        print("That's a miss")
+print(villain_atk_roll)
+print(hero_health)
+print(hero_health - villain_damage_roll)
 #3. If the attack hits, roll damage and subtract it from the target's hit points.
 
-#4. The second in initiative rolls to attack (and rolls damage) afterwards.
+
+    #4. The second in initiative rolls to attack (and rolls damage) afterwards.
 
 #5. Repeat steps 2-5 until one of the characters is dead
 
