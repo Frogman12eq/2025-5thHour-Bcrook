@@ -23,9 +23,9 @@ partyDict = {
     "Shadowheart" : {
         "HP" : 40,
         "Init" : 1,
-        "AC" : 18,
         "AtkMod": 4,
         "Damage" : random.randint(1,6) + 3,
+        "AC" : 18,
     },
     "Gale" : {
         "HP" : 32,
