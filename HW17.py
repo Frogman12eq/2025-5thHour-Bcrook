@@ -16,12 +16,22 @@ def rock_paper_scissors():
         print("It's a draw!")
     elif computer == 1 and players_rps == 2:
         print("you win!")
-    if computer == 2 and players_rps == 1:
+    elif computer == 2 and players_rps == 1:
         print("you lose!")
     elif computer == 3 and players_rps == 2:
         print("you lose!")
-    if computer == 2 and players_rps == 3:
+    elif computer == 2 and players_rps == 3:
         print("you win!")
     elif computer== 3 and players_rps == 1:
         print("you win!")
-    if
+    elif computer == 1 and players_rps== 3:
+        print("you lose!")
+    restart_game()
+def restart_game():
+    restart= input("Do you want to restart game? (y/n) ")
+    if restart == "y" or restart == "Y":
+        rock_paper_scissors()
+    else:
+        print("Thank you for playing!")
+        exit()
+rock_paper_scissors()
