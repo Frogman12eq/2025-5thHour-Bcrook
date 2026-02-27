@@ -14,7 +14,7 @@ import time
 
 partyDict = {
     "LaeZel" : {
-        "HO" : 48,
+        "HP" : 48,
         "Init" : 1,
         "AC" : 17,
         "AtkMod": 6,
