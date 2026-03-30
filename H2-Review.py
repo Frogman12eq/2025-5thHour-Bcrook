@@ -14,18 +14,18 @@ print(names_of_students)
 names_of_students.sort()
 print(names_of_students)
 #5. Append 5 different integers into the empty list from #2 and print the list.
-names_of_students.append(1)
-names_of_students.append(2)
-names_of_students.append(3)
-names_of_students.append(4)
-names_of_students.append(5)
-print(names_of_students)
+empty_list.append(1)
+empty_list.append(2)
+empty_list.append(3)
+empty_list.append(4)
+empty_list.append(5)
+print(empty_list)
 #6. Add together the middle three numbers in the list from #2 and print the result.
-adding= names_of_students[8] + names_of_students[9] + names_of_students[10]
+adding= empty_list[1] + empty_list[2] + empty_list[3]
 print(adding)
 #7. Remove the very first number in the list from #2. Print the new first number.
-names_of_students.pop(6)
-print(names_of_students[6])
+empty_list.pop(0)
+print(empty_list[0])
 #8. Create a dictionary with three keys with respective values: your name, your grade, and your favorite color.
 brysoninfoDict = {
     "Name" : "Bryson",
